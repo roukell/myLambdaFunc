@@ -1,5 +1,5 @@
-// const axios = require('axios')
-// const url = 'http://checkip.amazonaws.com/';
+// This lambda function is invoked by SNS Topic in the beginning of ASG lifecycle hook. 
+// It creates a total of 23 customised CloudWatch alarms.
 let response;
 const AWS = require("aws-sdk");
 const as = new AWS.AutoScaling();
