@@ -1,6 +1,5 @@
-// This lambda function is invoked by SNS Topic in the beginning of ASG lifecycle hook. 
+// This lambda function is invoked by SNS Topic in the beginning of ASG lifecycle hook (Launch EC2).
 // It creates a total of 23 customised CloudWatch alarms.
-let response;
 const AWS = require("aws-sdk");
 const as = new AWS.AutoScaling();
 const cw = new AWS.CloudWatch();
@@ -38,7 +37,10 @@ exports.lambdaHandler = async (notification, context) => {
   let result = "ABANDON";
   let lifecycleParams;
   // Log the request
-  console.log("INFO: request Recieved. Details: ", JSON.stringify(notification));
+  console.log(
+    "INFO: request Recieved. Details: ",
+    JSON.stringify(notification)
+  );
   const message = JSON.parse(notification.Records[0].Sns.Message);
   const metadata = message.NotificationMetadata;
   console.log("DEBUG: SNS message contents. Message: ", message);
@@ -57,11 +59,11 @@ exports.lambdaHandler = async (notification, context) => {
   const request1 = await ssm.getParameter(params1).promise();
   SNSMediumPriorityTopicArn = request1.Parameter.Value;
   console.log(SNSMediumPriorityTopicArn);
-  
+
   const request2 = await ssm.getParameter(params2).promise();
   SNSHighPriorityTopicArn = request2.Parameter.Value;
   console.log(SNSHighPriorityTopicArn);
-  
+
   const request3 = await ssm.getParameter(params3).promise();
   AutoScalingGroupName = request3.Parameter.Value;
   console.log(AutoScalingGroupName);
@@ -69,18 +71,28 @@ exports.lambdaHandler = async (notification, context) => {
   //define a closure for easy termination later on
   const terminate = function (success, err) {
     lifecycleParams = {
-      "AutoScalingGroupName" : message.AutoScalingGroupName,
-      "LifecycleHookName" : message.LifecycleHookName,
-      "LifecycleActionToken" : message.LifecycleActionToken,
-      "LifecycleActionResult" : result
+      AutoScalingGroupName: message.AutoScalingGroupName,
+      LifecycleHookName: message.LifecycleHookName,
+      LifecycleActionToken: message.LifecycleActionToken,
+      LifecycleActionResult: result,
     };
     //log that we're terminating and why
-    if(!success){
-      console.log("ERROR: Lambda function reporting failure to AutoScaling with error: ", err);
+    if (!success) {
+      console.log(
+        "ERROR: Lambda function reporting failure to AutoScaling with error: ",
+        err
+      );
       as.completeLifecycleAction(lifecycleParams);
       return;
+    } else {
+      as.completeLifecycleAction(lifecycleParams);
+      console.log("INFO: CompleteLifecycleAction Successful.");
     }
-  }; 
+  };
+
+  const delay = function (time) {
+    return new Promise((resolve) => setTimeout(resolve, time));
+  };
 
   // loop through the memory alarms list and create memory alarms
   for (let i of memoryAlarmList) {
@@ -90,7 +102,7 @@ exports.lambdaHandler = async (notification, context) => {
     if (i === "reef") threshold = 4294967296;
 
     const alarmParams = {
-      AlarmName: `${process_name}-memory-alarm-${instanceId}`,
+      AlarmName: `${i}-memory-alarm-${instanceId}`,
       AlarmActions: [SNSMediumPriorityTopicArn],
       AlarmDescription: `${instanceId} - high resident set memory usage (bytes) - ${i}`,
       MetricName: "procstat_memory_rss",
@@ -125,8 +137,17 @@ exports.lambdaHandler = async (notification, context) => {
     try {
       await cw.putMetricAlarm(alarmParams).promise();
     } catch (err) {
-      console.log("ERROR: Failed to create memory alarm: ", err);
-      terminate(false, err);
+      console.log(
+        "ERROR: Failed to create memory alarm, going to retry: ",
+        err
+      );
+      await delay(1000);
+      try {
+        await cw.putMetricAlarm(alarmParams).promise();
+      } catch (err) {
+        console.log("ERROR: Failed to create memory alarm, stop retrying: ", err);
+        terminate(false, err);
+      }
     }
   }
 
@@ -212,8 +233,14 @@ exports.lambdaHandler = async (notification, context) => {
     try {
       await cw.putMetricAlarm(alarmParams).promise();
     } catch (err) {
-      console.log("ERROR: Failed to create disk alarm: ", err);
-      terminate(false, err);
+      console.log("ERROR: Failed to create memory alarm, going to retry: ", err);
+      await delay(1000);
+      try {
+        await cw.putMetricAlarm(alarmParams).promise();
+      } catch (err) {
+        console.log("ERROR: Failed to create memory alarm, stop retrying: ", err);
+        terminate(false, err);
+      }
     }
   }
 
@@ -228,7 +255,7 @@ exports.lambdaHandler = async (notification, context) => {
       {
         Name: "InstanceId",
         Value: instanceId,
-      }
+      },
     ],
     Period: 300,
     EvaluationPeriods: 3,
@@ -242,11 +269,16 @@ exports.lambdaHandler = async (notification, context) => {
   try {
     await cw.putMetricAlarm(alarmParamsCpu).promise();
   } catch (err) {
-    console.log("ERROR: Failed to create system level CPU alarm: ", err);
-    terminate(false, err);
+    console.log("ERROR: Failed to create memory alarm, going to retry: ", err);
+    await delay(1000);
+    try {
+      await cw.putMetricAlarm(alarmParamsCpu).promise();
+    } catch (err) {
+      console.log("ERROR: Failed to create memory alarm, stop retrying: ", err);
+      terminate(false, err);
+    }
   }
 
   result = "CONTINUE";
-  as.completeLifecycleAction(lifecycleParams);
-  console.log("INFO: CompleteLifecycleAction Successful.");
+  terminate(true);
 };
